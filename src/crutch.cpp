@@ -1,239 +1,337 @@
-/*
-
- - Get data from sensors
-    - x and y position object from RPLidar
-    - z position object from Ultrasonic Sensors
-
- - Prioritize data
-    - convert x,y,z to percentages of total distance of measurement
-
- - Send data to Main Controller
-    - send via I2C
-
-*/
-
 #include <Arduino.h>
-
-// I2C Library
 #include <Wire.h>
+#include <PWMServo.h>
+#include <Ultrasonic.h>
+// RPLidar Sendsor Library - https://github.com/robopeak/rplidar_arduino
+#include <RPLidar.h>
+// Vector Library - https://github.com/janelia-arduino/Vector
+#include <Vector.h>
 
 // Address of Main Controller
 byte mc_address = 0x04;
 
+struct {
+    // Ultrasonic sensors
+    const int us1T = 2;
+    const int us1E = 3;
+    const int us2T = 4;
+    const int us2E = 5;
+    const int us3T = 6;
+    const int us3E = 7;
+    const int us4T = 8;
+    const int us4E = 9; 
 
-// RPLidar Sendsor Library - https://github.com/robopeak/rplidar_arduino
-#include <RPLidar.h>
+    // Servos for ultrasonic sensors
+    const int us_s1 = 10;
+    const int us_s2 = 11;
+    const int us_s3 = 12;
+    const int us_s4 = 13;
+} pinout;
 
 struct {
-    int RPLIDAR_MOTOR = 9; // Anlalog Pin
-    float maxDistance = 100.0; //not the max distance of the sensor, but the max distance we want to use
-    float minDistance = 0.0; //not the min distance of the sensor, but the min distance we want to use
-    float angleAtMinDist;
-    float tol = maxDistance * 0.05; //  5% tolerance
-} rpl;
+    
+    // Servos
+    const int min_PWM = 900;
+    const int max_PWM = 2100;
+    const float half_speed = max_PWM - (max_PWM - min_PWM)/2;
+    const int min_serv_range = 0;
+    const int max_serv_range = 90;
+    const int serv_speed = 18;
 
-RPLidar lidar;
+    // Ultrasonic sensors
 
+    const int min_us_range = 10;
+    const int max_us_range = 100;
 
-// UltraSonic Sensor Library - https://github.com/JRodrigoTech/Ultrasonic-HC-SR04
-#include <Ultrasonic.h>
+    //Serial
+    const int baud = 9600;
 
-struct {
-    int us1T = 4; // Digital Pins
-    int us1E = 5; // T - Trigger, E - Echo
-    int us2T = 6;
-    int us2E = 7;
-    float maxDistance = 100.0; //not the max distance of the sensor, but the max distance we want to use
-    float minDistance = 0.0; //not the min distance of the sensor, but the min distance we want to use
-    float tol = maxDistance * 0.05; // 5% tolerance
-} usp;
+} mod_inf;
 
-Ultrasonic us1(usp.us1T, usp.us1E);
-Ultrasonic us2(usp.us2T, usp.us2E);
+PWMServo us_s1;
+PWMServo us_s2;
+PWMServo us_s3;
+PWMServo us_s4;
 
-class DoMath {
+// Ultrasonic Sensor Objects
+
+Ultrasonic us1(pinout.us1T, pinout.us1E);
+Ultrasonic us2(pinout.us2T, pinout.us2E);
+Ultrasonic us3(pinout.us3T, pinout.us3E);
+Ultrasonic us4(pinout.us4T, pinout.us4E);
+
+class Headless_Misc {
+    public:
+
+        void failsafe() {
+            // Stop Motors
+        }
+
+        float scaleCommands (int direction, float multiplier) {
+        // Scale Values from 0 to 1 to 0 to 255
+
+        float speed;
+        return speed;
+}
+};
+
+class Headless_Sentry {
+    
+    // sec1 is the front sector
+    // sec2 is the right sector
+    // sec3 is the rear sector
+    // sec4 is the left sector
     
     public:
 
-        float rpl_to_coords (float a, float d) {
-            // convert rplidar angle and distance to x and y coordinates
-            float x = d * cos(a);
-            float y = d * sin(a);
-            return x, y;
-        }
+        float get_sec_avg_and_multiplier(Vector<float> sector) {
 
-        float check_rpl_dis(float d) {
-            if (d >= rpl.maxDistance) {
-                d = rpl.maxDistance;
-                return d;
-            } else if (d <= rpl.minDistance) {
-                d = rpl.minDistance;
-                return d;
-            } else {
-                return d;
-            }
-        }
-
-        float handle_rpl_vals(float d, float a) {
-            
-            // make sure not out of range
-            d = check_rpl_dis(d);
-
-            // convert angle and distance to x and y coordinates
-            float x, y = rpl_to_coords(a, d);
-
-
-            //normalize to a domain and range of (-100, 100)
-            //x -> (-100, 100) -> (left, right)
-            //y -> (-100, 100) -> (back, front)
-            float x_norm = map(x, rpl.minDistance, rpl.maxDistance, -100, 100);
-            float y_norm = map(y, rpl.minDistance, rpl.maxDistance, -100, 100);
-
-            // the result can be interpreted as a percentage of the distance from the robot to the object
-            
-            // the previous math has been used to calculate where the object is in relation to the robot
-            // the robot should move in the opposite direction of the object
-            // so the robot should move in the direction of the negative of the x and y values
-
-            // return the new percentages
-            return -x_norm, -y_norm;
-        }
-
-
-
-        float check_us_dis(float d) {
-            if (d >= usp.maxDistance) {
-                d = usp.maxDistance;
-                return d;
-            } else if (d <= usp.minDistance) {
-                d = usp.minDistance;
-                return d;
-            } else {
-                return d;
-            }
-        }
-
-        float comp_us_vals(float d1, float d2) {
-
-            // if the difference is within the tolerance, return the average
-
-            if (d1 >= (d2 + usp.tol)) {
-                return d1;
-            } else if (d2 >= (d1 + usp.tol)) {
-                return d2;
-            } else {
-                return (d1 + d2) / 2;
-            }
-        }
-
-        float handle_us_vals(float u1, float u2) {
-
-            float d = comp_us_vals(u1, u2);
-
-            //normalize to a domain and range of (-100, 100)
-            //x -> (-100, 100) -> (left, right)
-            //y -> (-100, 100) -> (back, front)
-            float d_norm = map(d, usp.minDistance, usp.maxDistance, -100, 100);
-
-            // the previous math has been used to determine how far away the object is
-            // the robot should move in the opposite direction of the object
-            // so the robot should move in the direction of the negative percentage of the distance
-
-            // return the new percentage
-            return -d_norm;
-        }
-
-};
-
-class DisatanceSensors {
-
-    DoMath dm;
-
-    public:
-
-    // up and down
-        float check_ultrasonic_sensors() {
-            
-            float u1 = us1.Ranging(CM);
-            float u2 = us2.Ranging(CM);
-            
-            float z = dm.handle_us_vals(u1, u2);
-            return z;
-        
-        }
-
-        float check_RPLidar() {
-
-            //More debuggin steps are needed to determine if the RPLidar is working properly
-
-            if (IS_OK(lidar.waitPoint())) {
-                analogWrite(rpl.RPLIDAR_MOTOR, 255);
-
-                if (lidar.getCurrentPoint().startBit) {
-                    // get average distance for four sectors out of 360
-                    float d = lidar.getCurrentPoint().distance;
-                    float a = lidar.getCurrentPoint().angle;
-
-                    //perform data processing here... 
-                
-                    float x, y = dm.handle_rpl_vals(d, a);
-                    return x, y;
+            // verify the average of all the readings in a sector
+            Vector<float> verified_sec;
+            float sec_count;
+            for (int i = 0; i < sector.size(); i++) {
+                if (boundaries(sector[i])) {
+                    sec_count += sector[i];
+                    // insert failsafe here
                 }
-                
+            }
+
+            // the average of the sector is used to determine which direction the drone should move
+            float sec_avg = sec_count / sector.size();
+            
+            // the multiplier is the percentage of the max range that the average is
+            // this is used to determine how fast the drone should move
+            float sec_mul = sec_avg / mod_inf.max_us_range; 
+            
+            return sec_avg, sec_mul;
+        }
+
+        float swivel(int direction) {
+            // direction is either 1 or -1, or 0 for stop
+            // create a Vector for each sector
+            
+            Vector<float> sec1;
+            Vector<float> sec2;
+            Vector<float> sec3;
+            Vector<float> sec4;
+
+
+            if (direction == 1) {
+                for (int i = mod_inf.min_serv_range; i < mod_inf.max_serv_range; i+=mod_inf.serv_speed) {
+                    us_s1.write(i);
+                    sec1.push_back(us1.Ranging(CM));
+                    us_s2.write(i);
+                    sec2.push_back(us2.Ranging(CM));
+                    us_s3.write(i);
+                    sec3.push_back(us3.Ranging(CM));
+                    us_s4.write(i);
+                    sec4.push_back(us4.Ranging(CM));
+                    delay(10);
+                }
+            } else if (direction == -1) {
+                for (int i = mod_inf.max_serv_range; i > mod_inf.min_serv_range; i-=mod_inf.serv_speed) {
+                    us_s1.write(i);
+                    sec1.push_back(us1.Ranging(CM));
+                    us_s2.write(i);
+                    sec2.push_back(us2.Ranging(CM));
+                    us_s3.write(i);
+                    sec3.push_back(us3.Ranging(CM));
+                    us_s4.write(i);
+                    sec4.push_back(us4.Ranging(CM));
+                    delay(10);
+                }
             } else {
-            analogWrite(rpl.RPLIDAR_MOTOR, 0); //stop the rplidar motor
-            // try to detect RPLIDAR... 
-            rplidar_response_device_info_t info;
-            if (IS_OK(lidar.getDeviceInfo(info, 100))) {
-            //detected...
-            lidar.startScan();
-            analogWrite(rpl.RPLIDAR_MOTOR, 255);
-            delay(1000);
+                // stop
+                us_s1.write(90);
+                us_s2.write(90);
+                us_s3.write(90);
+                us_s4.write(90);
+            }
+            
+            float avg1, mul1 = get_sec_avg_and_multiplier(sec1);
+            float avg2, mul2 = get_sec_avg_and_multiplier(sec2);
+            float avg3, mul3 = get_sec_avg_and_multiplier(sec3);
+            float avg4, mul4 = get_sec_avg_and_multiplier(sec4); 
+            return avg1, mul1, avg2, mul2, avg3, mul3, avg4, mul4;
+        }
+
+        bool boundaries(int value) {
+            // check if the value is within the mod_inf.min_us_range and mod_inf.max_us_range
+            if (value > mod_inf.min_us_range && value < mod_inf.max_us_range) {
+                return true;
+            } else {
+                return false;
             }
         }
-    }
 
+        float decide_move(float sec1, float sec2, float sec3, float sec4) {
+            if (boundaries(sec1) && boundaries(sec2) && boundaries(sec3) && boundaries(sec4)) {
+                // move toward the sector with the highest average (most space)
+                if (sec1 > sec2 && sec1 > sec3 && sec1 > sec4) {
+                    // move forward
+                    return 1;
+                } else if (sec2 > sec1 && sec2 > sec3 && sec2 > sec4) {
+                    // move right
+                    return 2;
+                } else if (sec3 > sec1 && sec3 > sec2 && sec3 > sec4) {
+                    // move backward
+                    return 3;
+                } else if (sec4 > sec1 && sec4 > sec2 && sec4 > sec3) {
+                    // move left
+                    return 4;
+                } else {
+                    // stop
+                    return 0;
+                }
+            } else if (boundaries(sec1) && boundaries(sec2) && boundaries(sec3) && !boundaries(sec4)) {
+                // sec4 is out of range
+                // move right
+                return 2;
+            } else if (boundaries(sec1) && boundaries(sec2) && !boundaries(sec3) && boundaries(sec4)) {
+                // sec3 is out of range
+                // move forward
+                return 1;
+            } else if (boundaries(sec1) && !boundaries(sec2) && boundaries(sec3) && boundaries(sec4)) {
+                // sec2 is out of range
+                // move left
+                return 3;
+            } else if (!boundaries(sec1) && boundaries(sec2) && boundaries(sec3) && boundaries(sec4)) {
+                // sec1 is out of range
+                // move backward
+                return 4;
+
+
+            }
+        }
+
+        float quick_init () {
+          if (us_s1.read() >= 160) {
+                float sec1, sec1_mul, sec2, sec2_mul, sec3, sec3_mul, sec4, sec4_mul = swivel(1);
+                return sec1, sec1_mul, sec2, sec2_mul, sec3, sec3_mul, sec4, sec4_mul;
+            } else {
+                float sec1, sec1_mul, sec2, sec2_mul, sec3, sec3_mul, sec4, sec4_mul = swivel(-1);
+                return sec1, sec1_mul, sec2, sec2_mul, sec3, sec3_mul, sec4, sec4_mul;
+            }
+        }
+
+        float exec () {
+
+            // get position of servo to swivel to empty space
+            // swivel the servo & get the average of each sector
+            
+            float sec1, sec1_mul, sec2, sec2_mul, sec3, sec3_mul, sec4, sec4_mul = quick_init();
+
+            // decide which direction to move based on the averages
+            int move = decide_move(sec1, sec2, sec3, sec4);
+            
+            // return the direction, and the corresponding multiplier
+            if (move == 1) {
+                return 1, sec1_mul;
+            } else if (move == 2) {
+                return 2, sec2_mul;
+            } else if (move == 3) {
+                return 3, sec3_mul;
+            } else if (move == 4) {
+                return 4, sec4_mul;
+            } else {
+                return 0, 0;
+            }
+        }
 };
 
-void onReceive(int bytes) {
-    while (Wire.available()) {
-        // change this depending on the number of whatever you are receiving
-        // if you are receiving anything at all
-        char c = Wire.read();
-        Serial.print(c);
-    }
-}
+class Headless_Pre_Defined_Moves {
+    public:
+        // This might change after trial and error, but...
+
+        //us_s1 is front right
+        //us_s2 is back right
+        //us_s3 is back left
+        //us_s4 is front left
+
+        //spin specified motors 10% faster to move in a direction
+        float movement_multiplier = 1.1;
+        
+        void forward(float speed) {
+            // move forward
+            // back motors spin faster
+            us_s1.write(speed);
+            us_s2.write(speed * movement_multiplier);
+            us_s3.write(speed * movement_multiplier);
+            us_s4.write(speed);
+        }
+
+        void backward(float speed) {
+            // move backward
+            // front motors spin faster
+            us_s1.write(speed * movement_multiplier);
+            us_s2.write(speed);
+            us_s3.write(speed);
+            us_s4.write(speed * movement_multiplier);
+        }
+
+        void left(float speed) {
+            // move left
+            // right motors spin faster
+            us_s1.write(speed * movement_multiplier);
+            us_s2.write(speed * movement_multiplier);
+            us_s3.write(speed);
+            us_s4.write(speed);
+        }
+
+        void right(float speed) {
+            // move right
+            // left motors spin faster
+            us_s1.write(speed);
+            us_s2.write(speed);
+            us_s3.write(speed * movement_multiplier);
+            us_s4.write(speed * movement_multiplier);
+        }
+
+        void hover() {
+            // hover
+            // write half PWM speed
+            us_s1.write(mod_inf.half_speed);
+            us_s2.write(mod_inf.half_speed);
+            us_s3.write(mod_inf.half_speed);
+            us_s4.write(mod_inf.half_speed);
+        }
+};
 
 void setup() {
+    Headless_Misc hm;
+    Headless_Sentry hs;
+    Headless_Pre_Defined_Moves hpd;
 
-    Serial.begin(9600);
-    lidar.begin(Serial);
-    Wire.begin();
+    // Ultrasonic Sensor Servos
+    us_s1.attach(pinout.us_s1);
+    us_s2.attach(pinout.us_s2);
+    us_s3.attach(pinout.us_s3);
+    us_s4.attach(pinout.us_s4);
 
-    pinMode(rpl.RPLIDAR_MOTOR, OUTPUT);
-    pinMode(usp.us1T, OUTPUT);
-    pinMode(usp.us1E, INPUT);
-    pinMode(usp.us2T, OUTPUT);
-    pinMode(usp.us2E, INPUT);
+    Serial.begin(mod_inf.baud);
 
-    lidar.startScan();
-    analogWrite(rpl.RPLIDAR_MOTOR, 0);
 }
 
 void loop() {
-
-    DisatanceSensors ds;
+    Serial.print("us1: ");
+    Serial.print(us1.Ranging(CM));
+    Serial.print("us2: ");
+    Serial.print(us2.Ranging(CM));
+    Serial.print("us4: ");
+    Serial.print(us3.Ranging(CM));
+    Serial.print("us4: ");
+    Serial.println(us4.Ranging(CM));
     
-    // get distances from objects
-    // If danger close, also specify
-    int mX, mY = ds.check_RPLidar();
-    int mZ = ds.check_ultrasonic_sensors();
-
-    // send data to Main Controller
-    Wire.beginTransmission(mc_address);
-    Wire.write(mX); // percentage that the robot should move in the x direction
-    Wire.write(mY); // percentage that the robot should move in the y direction
-    Wire.write(mZ); // percentage that the robot should move in the z direction
-    Wire.endTransmission();
+    us_s1.write(mod_inf.max_serv_range);
+    us_s2.write(mod_inf.max_serv_range);
+    us_s3.write(mod_inf.max_serv_range);
+    us_s4.write(mod_inf.max_serv_range);
     delay(1000);
+
+    us_s1.write(mod_inf.min_serv_range);
+    us_s2.write(mod_inf.min_serv_range);
+    us_s3.write(mod_inf.min_serv_range);
+    us_s4.write(mod_inf.min_serv_range);
+    delay(1000);
+
 }
